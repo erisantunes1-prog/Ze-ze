@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Organizador de Rotas - Zé Delivery</title>
+
+<style>
+body {
+    font-family: Arial, sans-serif;
+    background: #111;
+    color: white;
+    text-align: center;
+    padding: 20px;
+}
+
+textarea {
+    width: 90%;
+    height: 150px;
+    margin: 10px 0;
+    border-radius: 10px;
+    padding: 10px;
+}
+
+button {
+    padding: 12px 20px;
+    margin: 8px;
+    border-radius: 10px;
+    border: none;
+    cursor: pointer;
+    font-weight: bold;
+}
+
+.btn { background: #00c853; color: white; }
+.btn2 { background: #2962ff; color: white; }
+.mic { background: #ff1744; color: white; }
+.next { background: #ff9100; color: white; }
+
+.result {
+    margin-top: 20px;
+    word-break: break-all;
+}
+
+.entrega-item {
+    background: #222;
+    padding: 8px;
+    margin: 5px;
+    border-radius: 8px;
+}
+.concluida {
+    text-decoration: line-through;
+    opacity: 0.6;
+}
+</style>
+</head>
+
+<body>
+
+<h1>🚚 Organizador de Rotas - Zé Delivery</h1>
+
+<p>Cole os endereços (um por linha) ou use o microfone:</p>
+
+<textarea id="enderecos" placeholder="Ex:
+Rua A, 123 - Campinas
+Rua B, 456 - Campinas
+Rua C, 789 - Campinas"></textarea>
+
+<br>
+
+<button class="btn" onclick="gerarRota()">Gerar Rota Google Maps</button>
+<button class="btn2" onclick="abrirWazeUltimo()">Abrir Último no Waze</button>
+<button class="next" onclick="proximaEntrega()">Próxima Entrega</button>
+<button onclick="otimizarOrdem()" style="background:#aa00ff;color:white;">Otimizar Ordem</button>
+<button class="mic" onclick="ativarMicrofone()">🎤 Falar Endereço</button>
+<button onclick="limpar()">Limpar</button>
+
+<div class="result" id="resultado"></div>
+<div id="listaEntregas"></div>
+<div id="painelExtra" style="margin-top:20px;"></div>
+
+<script>
+
+// Captura erro global (evita tela branca)
+window.addEventListener("error", function(e) {
+    console.log("Erro capturado:", e.message);
+});
+
+let minhaLocalizacao = null;
+let listaGlobal = [];
+let indiceAtual = 0;
+let coordenadas = [];
+
+// Localização atual
+window.onload = function() {
+    if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(function(position) {
+            minhaLocalizacao = {
+                lat: position.coords.latitude,
+                lon: position.coords.longitude
+            };
+        });
+    }
+};
+
+// Microfone
+function ativarMicrofone() {
+    if (!('webkitSpeechRecognition' in window)) {
+        alert("Seu navegador não suporta reconhecimento de voz.");
+        return;
+    }
+
+    let recognition = new webkitSpeechRecognition();
+    recognition.lang = "pt-BR";
+    recognition.start();
+
+    recognition.onresult = function(event) {
+        let textoFalado = event.results[0][0].transcript;
+        let campo = document.getElementById("enderecos");
+        campo.value += (campo.value ? "\n" : "") + textoFalado;
+    };
+}
+
+// Geocodificação segura
+async function geocodificar(endereco) {
+    try {
+        let url = "https://nominatim.openstreetmap.org/search?format=json&q=" 
+                  + encodeURIComponent(endereco);
+
+        let resposta = await fetch(url);
+
+        if (!resposta.ok) return null;
+
+        let dados = await resposta.json();
+
+        if (dados.length > 0) {
+            return {
+                lat: parseFloat(dados[0].lat),
+                lon: parseFloat(dados[0].lon)
+            };
+        }
+
+        return null;
+
+    } catch (erro) {
+        console.log("Erro na geocodificação:", erro);
+        return null;
+    }
+}
+
+// Distância real
+function calcularDistancia(a, b) {
+    const R = 6371;
+    const dLat = (b.lat - a.lat) * Math.PI / 180;
+    const dLon = (b.lon - a.lon) * Math.PI / 180;
+
+    const lat1 = a.lat * Math.PI / 180;
+    const lat2 = b.lat * Math.PI / 180;
+
+    const x = Math.sin(dLat/2)**2 +
+              Math.sin(dLon/2)**2 *
+              Math.cos(lat1) * Math.cos(lat2);
+
+    const c = 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1-x));
+    return R * c;
+}
+
+// Gerar rota
+async function gerarRota() {
+    let texto = document.getElementById("enderecos").value.trim();
+    if (!texto) {
+        alert("Digite os endereços primeiro!");
+        return;
+    }
+
+    listaGlobal = texto.split("\n");
+    coordenadas = [];
+    indiceAtual = 0;
+
+    for (let endereco of listaGlobal) {
+        let coord = await geocodificar(endereco);
+        coordenadas.push(coord);
+    }
+
+    let origem = minhaLocalizacao 
+        ? minhaLocalizacao.lat + "," + minhaLocalizacao.lon 
+        : listaGlobal[0];
+
+    let destino = listaGlobal[listaGlobal.length - 1];
+    let waypoints = listaGlobal.slice(0, listaGlobal.length - 1).join("|");
+
+    let link = "https://www.google.com/maps/dir/?api=1" +
+               "&origin=" + encodeURIComponent(origem) +
+               "&destination=" + encodeURIComponent(destino) +
+               "&waypoints=" + encodeURIComponent(waypoints);
+
+    document.getElementById("resultado").innerHTML =
+        "<p><b>Google Maps:</b></p><a href='" + link + "' target='_blank'>" + link + "</a>";
+
+    mostrarLista();
+    atualizarPainel();
+}
+
+// KM total
+function calcularKmTotal() {
+    if (coordenadas.length < 2) return 0;
+
+    let total = 0;
+    for (let i = 0; i < coordenadas.length - 1; i++) {
+        if (coordenadas[i] && coordenadas[i+1]) {
+            total += calcularDistancia(coordenadas[i], coordenadas[i+1]);
+        }
+    }
+    return total;
+}
+
+// Painel
+function atualizarPainel() {
+    let km = calcularKmTotal().toFixed(2);
+    let tempo = Math.round(km * 3);
+
+    document.getElementById("painelExtra").innerHTML =
+        "<h3>📊 Resumo da Rota</h3>" +
+        "Total de Entregas: <b>" + listaGlobal.length + "</b><br>" +
+        "KM estimado real: <b>" + km + " km</b><br>" +
+        "Tempo estimado: <b>" + tempo + " min</b>";
+}
+
+// Otimização real
+function otimizarOrdem() {
+    if (coordenadas.length < 2) return;
+
+    let restante = coordenadas.map((c, i) => ({
+        coord: c,
+        endereco: listaGlobal[i]
+    }));
+
+    let novaLista = [];
+    let novasCoords = [];
+
+    let atual = restante.shift();
+    novaLista.push(atual.endereco);
+    novasCoords.push(atual.coord);
+
+    while (restante.length > 0) {
+        let menorIndex = 0;
+        let menorDist = calcularDistancia(atual.coord, restante[0].coord);
+
+        for (let i = 1; i < restante.length; i++) {
+            let dist = calcularDistancia(atual.coord, restante[i].coord);
+            if (dist < menorDist) {
+                menorDist = dist;
+                menorIndex = i;
+            }
+        }
+
+        atual = restante.splice(menorIndex, 1)[0];
+        novaLista.push(atual.endereco);
+        novasCoords.push(atual.coord);
+    }
+
+    listaGlobal = novaLista;
+    coordenadas = novasCoords;
+    indiceAtual = 0;
+
+    mostrarLista();
+    atualizarPainel();
+}
+
+// Lista
+function mostrarLista() {
+    let container = document.getElementById("listaEntregas");
+    container.innerHTML = "<h3>📦 Entregas:</h3>";
+
+    listaGlobal.forEach((endereco, index) => {
+        container.innerHTML +=
+            "<div class='entrega-item' id='item-" + index + "'>" +
+            (index + 1) + " - " + endereco +
+            "</div>";
+    });
+}
+
+// Waze
+function abrirWazeUltimo() {
+    if (listaGlobal.length === 0) return;
+    let destino = listaGlobal[listaGlobal.length - 1];
+    let link = "https://www.waze.com/ul?q=" + encodeURIComponent(destino) + "&navigate=yes";
+    window.open(link, "_blank");
+}
+
+function proximaEntrega() {
+    if (listaGlobal.length === 0) return;
+    if (indiceAtual >= listaGlobal.length) {
+        alert("Todas as entregas concluídas!");
+        return;
+    }
+
+    let destino = listaGlobal[indiceAtual];
+    let link = "https://www.waze.com/ul?q=" + encodeURIComponent(destino) + "&navigate=yes";
+
+    indiceAtual++;
+    window.open(link, "_blank");
+}
+
+// Limpar
+function limpar() {
+    document.getElementById("enderecos").value = "";
+    document.getElementById("resultado").innerHTML = "";
+    document.getElementById("listaEntregas").innerHTML = "";
+    document.getElementById("painelExtra").innerHTML = "";
+    listaGlobal = [];
+    coordenadas = [];
+    indiceAtual = 0;
+}
+
+</script>
+
+</body>
+</html>
